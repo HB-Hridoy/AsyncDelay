@@ -1,0 +1,8 @@
+/.fast
+/.idea
+/.vscode
+.classpath
+.project
+out/blocks/androidbuilder/
+out/extension.txt
+/.github

@@ -11,7 +11,9 @@ public enum Action implements OptionList<String> {
     IntervalCancel("INTERVAL_CANCEL"),
     DebounceCancel("DEBOUNCE_CANCEL"),
     ThrottleCancel("THROTTLE_CANCEL"),
-    DelayCancel("DELAY_CANCEL");
+    DelayCancel("DELAY_CANCEL"),
+    GateLock("GATE_LOCK"),
+    GateUnlock("GATE_UNLOCK");
 
     private final String action;
     Action(String action){

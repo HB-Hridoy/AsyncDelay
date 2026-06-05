@@ -10,10 +10,12 @@ import com.google.appinventor.components.annotations.SimpleFunction;
 import com.google.appinventor.components.runtime.AndroidNonvisibleComponent;
 import com.google.appinventor.components.runtime.ComponentContainer;
 import com.google.appinventor.components.runtime.EventDispatcher;
-import com.google.appinventor.components.runtime.OnDestroyListener; // Added for safe cleanup
+import com.google.appinventor.components.runtime.OnDestroyListener;
 import com.google.appinventor.components.runtime.util.YailList;
 import com.google.appinventor.components.runtime.util.YailProcedure;
+
 import com.hridoy.asyncdelay.helpers.Action;
+import com.hridoy.asyncdelay.helpers.TaskType;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -21,8 +23,8 @@ import java.util.Map;
 import java.util.Set;
 
 @DesignerComponent(
-		version = 12,
-		description = "Ultimate non-blocking async execution engine utilizing native parameterized anonymous callback structures with global error interception.",
+		version = 13,
+		description = "Ultimate high-performance, non-blocking asynchronous execution engine for App Inventor. Provides thread-safe, precise scheduling primitives including multi-instance looping intervals, timelines, debouncing, throttling, frame-synchronized UI updates, and atomic execution gatekeepers.",
 		nonVisible = true,
 		iconName = "icon.png"
 )
@@ -94,74 +96,101 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 	// CORE ASYNC FUNCTIONS
 	// ================================================================
 
-	@SimpleFunction(description = "Executes the callback block on the main thread after a specified delay.")
-	public void PostDelay(int delayMs, final YailProcedure callback) {
-		if (callback == null) return;
-		uiHandler.postDelayed(new Runnable() {
-			@Override
-			public void run() {
-				try {
-					callback.call();
-				} catch (Exception e) {
-					ErrorOccurred("PostDelay", e.getMessage() != null ? e.getMessage() : e.toString());
-				}
-			}
-		}, delayMs);
-	}
+	@SimpleFunction(description =
+			"Schedules a macro task block to execute on the main thread after a specified delay.\n" +
+					"Leave the ID empty (\"\") for a standard single-use delay.\n" +
+					"Provide a unique text ID to make it overwritable; consecutive calls with the same ID will reset the timer.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  None (expects exactly 0 parameters)")
+	public void PostDelay(final String id, final int delayMs, final YailProcedure callback) {
+		if (!validateCallback("PostDelay", callback, 0)) return;
 
-	@SimpleFunction(description = "Schedules a callback to run after a specified delay, identified by a custom text tag. If a task with the same tag already exists, it is overridden.")
-	public void PostDelayWithTag(final String tag, final int delayMs, final YailProcedure callback) {
-		if (callback == null || tag == null) return;
+		// 1. Determine if this is an ID-tracked task or a fire-and-forget task
+		final boolean hasId = (id != null && !id.trim().isEmpty());
+		final String finalId = hasId ? id.trim() : "AUTOID_" + System.nanoTime() + "_" + callback.hashCode();
 
-		if (scheduledTasks.containsKey(tag)) {
-			uiHandler.removeCallbacks(scheduledTasks.get(tag));
+		// 2. If it has an ID and it's already pending, clear the old execution timer
+		if (hasId && scheduledTasks.containsKey(finalId)) {
+			uiHandler.removeCallbacks(scheduledTasks.get(finalId));
 		}
 
 		Runnable taskRunnable = new Runnable() {
 			@Override
 			public void run() {
 				try {
-					scheduledTasks.remove(tag);
+					if (hasId) {
+						scheduledTasks.remove(finalId);
+					}
 					callback.call();
 				} catch (Exception e) {
-					ErrorOccurred("PostDelayWithTag [" + tag + "]", e.getMessage() != null ? e.getMessage() : e.toString());
+					String context = hasId ? "PostDelay [" + finalId + "]" : "PostDelay";
+					ErrorOccurred(context, e.getMessage() != null ? e.getMessage() : e.toString());
 				}
 			}
 		};
 
-		scheduledTasks.put(tag, taskRunnable);
+		// 3. Track it if it needs to be accessible by ControlTask or an overwrite pass
+		if (hasId) {
+			scheduledTasks.put(finalId, taskRunnable);
+		}
+
 		uiHandler.postDelayed(taskRunnable, delayMs);
 	}
 
-	@SimpleFunction(description = "Manually cancels a pending delayed task associated with the specified tag before it can execute.")
-	public void DelayCancel(final String tag) {
-		if (tag == null) return;
-		if (scheduledTasks.containsKey(tag)) {
-			uiHandler.removeCallbacks(scheduledTasks.remove(tag));
+	@SimpleFunction(description =
+			"Schedules a parameterized task block to run after a specified delay.\n" +
+					"Leave the ID empty (\"\") for a standard single-use delay.\n" +
+					"Freezes values passed into the arguments list the moment this function is triggered.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  Matches the exact length and item sequence of your arguments list parameter.")
+	public void PostDelayWithArgs(final String id, final int delayMs, final YailList arguments, final YailProcedure callback) {
+		if (arguments == null) {
+			ErrorOccurred("PostDelayWithArgs", "Arguments list cannot be null.");
+			return;
 		}
-	}
+		if (!validateCallback("PostDelayWithArgs", callback, arguments.size())) return;
 
-	@SimpleFunction(description = "Schedules a parameterized callback to run after a delay. Takes a list of arguments and passes them directly into the callback block, preserving their exact values at the moment the timer started.")
-	public void PostDelayWithArgs(final int delayMs, final YailList arguments, final YailProcedure callback) {
-		if (callback == null || arguments == null) return;
+		final boolean hasId = (id != null && !id.trim().isEmpty());
+		final String finalId = hasId ? id.trim() : "AUTOID_ARGS_" + System.nanoTime() + "_" + callback.hashCode();
+
+		if (hasId && scheduledTasks.containsKey(finalId)) {
+			uiHandler.removeCallbacks(scheduledTasks.get(finalId));
+		}
 
 		final Object[] argsArray = arguments.toArray();
 
-		uiHandler.postDelayed(new Runnable() {
+		Runnable taskRunnable = new Runnable() {
 			@Override
 			public void run() {
 				try {
+					if (hasId) {
+						scheduledTasks.remove(finalId);
+					}
 					callback.call(argsArray);
 				} catch (Exception e) {
-					ErrorOccurred("PostDelayWithArgs", e.getMessage() != null ? e.getMessage() : e.toString());
+					String context = hasId ? "PostDelayWithArgs [" + finalId + "]" : "PostDelayWithArgs";
+					ErrorOccurred(context, e.getMessage() != null ? e.getMessage() : e.toString());
 				}
 			}
-		}, delayMs);
+		};
+
+		if (hasId) {
+			scheduledTasks.put(finalId, taskRunnable);
+		}
+
+		uiHandler.postDelayed(taskRunnable, delayMs);
 	}
 
-	@SimpleFunction(description = "Synchronizes execution with the Android display hardware clock. Fires the callback exactly at the start of the next screen frame pass to handle pixel-perfect UI updates without stutter.")
+	@SimpleFunction(description =
+			"Synchronizes execution with the Android device hardware display pass subsystem clock.\n" +
+					"Triggers the execution block immediately at the start of the next screen frame calculation loop.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  None (expects exactly 0 parameters)")
 	public void PostToNextFrame(final YailProcedure callback) {
-		if (callback == null) return;
+		if (!validateCallback("PostToNextFrame", callback, 0)) return;
 
 		Choreographer.getInstance().postFrameCallback(new Choreographer.FrameCallback() {
 			@Override
@@ -180,9 +209,14 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		});
 	}
 
-	@SimpleFunction(description = "Safely schedules the execution of a callback on the Main UI Thread. Essential for updating UI elements or calling native App Inventor blocks from background threads, external listeners, or third-party SDK events.")
+	@SimpleFunction(description =
+			"Safely schedules execution context logic straight onto the Main Application UI thread.\n" +
+					"Essential for modifying layouts or UI components from background sockets or listeners.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  None (expects exactly 0 parameters)")
 	public void PostToMainThread(final YailProcedure callback) {
-		if (callback == null) return;
+		if (!validateCallback("PostToMainThread", callback, 0)) return;
 
 		uiHandler.post(new Runnable() {
 			@Override
@@ -200,9 +234,20 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 	// ADVANCED INTERVAL LIFECYCLE ENGINE
 	// ================================================================
 
-	@SimpleFunction(description = "Starts a highly configurable repetitive loop. Set maxCycles to 0 for infinite execution. onCompleteCallback fires automatically if maxCycles is reached.")
+	@SimpleFunction(description =
+			"Starts an isolated repetitive looping execution context track identified by a text ID tag.\n" +
+					"Pass maxCycles as 0 for infinite processing loop configurations.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  1) callback           (number: receives current step counter index integer value)\n" +
+					"  2) onCompleteCallback (none: triggers automatically when maxCycles limit is hit)")
 	public void StartInterval(final String id, final int intervalMs, final int maxCycles, final YailProcedure callback, final YailProcedure onCompleteCallback) {
-		if (callback == null || id == null || id.isEmpty()) return;
+		if (id == null || id.isEmpty()) {
+			ErrorOccurred("StartInterval", "Interval ID identifier cannot be empty.");
+			return;
+		}
+		if (!validateCallback("StartInterval [" + id + "] Core Loop", callback, 1)) return;
+		if (onCompleteCallback != null && !validateCallback("StartInterval [" + id + "] OnComplete", onCompleteCallback, 0)) return;
 
 		if (intervalRunnableMap.containsKey(id)) {
 			uiHandler.removeCallbacks(intervalRunnableMap.remove(id));
@@ -254,18 +299,26 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		uiHandler.postDelayed(loopRunnable, intervalMs);
 	}
 
-	@SimpleFunction(description = "Dynamically updates the execution frequency rate of an active interval loop without interrupting cycle states.")
+	@SimpleFunction(description =
+			"Dynamically modifies the operational millisecond execution speed rate of an active interval loop.\n" +
+					"Changes frequency tracking instantly without breaking processing threads or modifying counts.")
 	public void UpdateIntervalSpeed(final String id, final int newIntervalMs) {
 		if (id == null || !intervalRunnableMap.containsKey(id)) return;
 		intervalMsMap.put(id, newIntervalMs);
 	}
 
-	@SimpleFunction(description = "Returns an App Inventor List containing the text IDs of all running interval loops.")
+	@SimpleFunction(description =
+			"Returns an App Inventor structured list containing tracking text IDs of all active internal loop states.")
 	public YailList GetRunningIntervalIds() {
 		return YailList.makeList(intervalRunnableMap.keySet());
 	}
 
-	@SimpleFunction(description = "Sequences tasks using a master list containing pairs of [delayMs, anonymous_block]. Passes the current step index to the callback.")
+	@SimpleFunction(description =
+			"Sequences chained execution macros using a master list block processing configuration layout.\n" +
+					"Accepts a paired list formatted exactly as [delayMs, anonymous_block].\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  1) index        (number: passes the sequential integer layout map list location index)")
 	public void SequenceTimeline(final YailList timelinePairs) {
 		if (timelinePairs == null || timelinePairs.size() == 0) return;
 		executeTimelineStep(timelinePairs, 1);
@@ -304,6 +357,10 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		}
 
 		final YailProcedure currentCallback = (YailProcedure) callbackObj;
+		if (!validateCallback("SequenceTimeline [Step " + index + "]", currentCallback, 1)) {
+			executeTimelineStep(pairs, index + 1);
+			return;
+		}
 
 		uiHandler.postDelayed(new Runnable() {
 			@Override
@@ -318,9 +375,14 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		}, currentDelay);
 	}
 
-	@SimpleFunction(description = "Yields execution instantly, pushing the block to the bottom of the OS loop queue to prevent UI locking.")
+	@SimpleFunction(description =
+			"Yields processor command control instantly, placing the callback block loop at the bottom of the looper trace.\n" +
+					"Forces operations to let layouts render completely before finishing calculations blocks.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  None (expects exactly 0 parameters)")
 	public void PostToMicroTask(final YailProcedure callback) {
-		if (callback == null) return;
+		if (!validateCallback("PostToMicroTask", callback, 0)) return;
 		uiHandler.post(new Runnable() {
 			@Override
 			public void run() {
@@ -333,16 +395,25 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		});
 	}
 
-	@SimpleFunction(description = "Registers task tokens into a sync group. callback fires once all tokens invoke ResolveTask.")
-	public void AwaitAll(final String groupId, final YailList tasks, final YailProcedure callback) {
-		if (groupId == null || groupId.isEmpty() || callback == null) return;
+	@SimpleFunction(description =
+			"Sets up a tracking queue sync layer. Pushes block taskIds inside a destination repository array group.\n" +
+					"The terminal callback triggers dynamically only when all items confirm completion via ResolveTask.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  None (expects exactly 0 parameters)")
+	public void AwaitAll(final String groupId, final YailList taskIds, final YailProcedure callback) {
+		if (groupId == null || groupId.isEmpty()) {
+			ErrorOccurred("AwaitAll", "Group ID identifier cannot be empty.");
+			return;
+		}
+		if (!validateCallback("AwaitAll [" + groupId + "]", callback, 0)) return;
 
-		Set<Object> tokens = new HashSet<>();
-		for (int i = 1; i <= tasks.size(); i++) {
-			tokens.add(tasks.get(i));
+		Set<Object> Ids = new HashSet<>();
+		for (int i = 1; i <= taskIds.size(); i++) {
+			Ids.add(taskIds.get(i));
 		}
 
-		if (tokens.isEmpty()) {
+		if (Ids.isEmpty()) {
 			try {
 				callback.call();
 			} catch (Exception e) {
@@ -351,7 +422,7 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 			return;
 		}
 
-		awaitGroups.put(groupId, tokens);
+		awaitGroups.put(groupId, Ids);
 
 		debounceMap.put("GROUP_CB_" + groupId, new Runnable() {
 			@Override
@@ -367,46 +438,50 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		});
 	}
 
-	@SimpleFunction(description = "Marks a specific running task token within a group as completed.")
-	public void ResolveTask(final String groupName, Object token) {
-		if (!awaitGroups.containsKey(groupName)) return;
+	@SimpleFunction(description =
+			"Signals completion of a distinct token tracking item processing inside an active AwaitAll grouping map.")
+	public void ResolveTask(final String groupId, Object taskId) {
+		if (groupId == null || !awaitGroups.containsKey(groupId)) return;
 
-		Set<Object> tokens = awaitGroups.get(groupName);
-		tokens.remove(token);
+		Set<Object> taskIds = awaitGroups.get(groupId);
+		taskIds.remove(taskId);
 
-		if (tokens.isEmpty()) {
-			Runnable cb = debounceMap.get("GROUP_CB_" + groupName);
+		if (taskIds.isEmpty()) {
+			Runnable cb = debounceMap.get("GROUP_CB_" + groupId);
 			if (cb != null) {
 				uiHandler.post(cb);
 			}
 		}
 	}
 
-	@SimpleFunction(description = "Executes the callback block ONLY if the specified gate tag is unlocked.")
-	public void GuardGate(final String gateId, final YailProcedure callback) {
-		if (callback == null || gateId == null || gateId.isEmpty()) return;
-		if (lockedGates.contains(gateId)) return;
+	@SimpleFunction(description =
+			"Intercepts logic flow blocks. Only passes down execution if the designated target gate identifier ID is open.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  None (expects exactly 0 parameters)")
+	public void GuardGate(final String id, final YailProcedure callback) {
+		if (id == null || id.isEmpty()) return;
+		if (!validateCallback("GuardGate [" + id + "]", callback, 0)) return;
+		if (lockedGates.contains(id)) return;
 
 		try {
 			callback.call();
 		} catch (Exception e) {
-			ErrorOccurred("GuardGate [" + gateId + "]", e.getMessage() != null ? e.getMessage() : e.toString());
+			ErrorOccurred("GuardGate [" + id + "]", e.getMessage() != null ? e.getMessage() : e.toString());
 		}
 	}
 
-	@SimpleFunction(description = "Locks a gate tag, blocking associated GuardGate executions.")
-	public void LockGate(String gateId) {
-		if (gateId != null && !gateId.isEmpty()) lockedGates.add(gateId);
-	}
-
-	@SimpleFunction(description = "Unlocks a gate tag, allowing guarded executions to pass.")
-	public void UnlockGate(String gateId) {
-		if (gateId != null) lockedGates.remove(gateId);
-	}
-
-	@SimpleFunction(description = "Asynchronously polls a condition block. When true, fires the executionCallback. Passes total attempts to condition.")
+	@SimpleFunction(description =
+			"Asynchronously polls a condition logic block block sequentially inside the main thread runner pipeline.\n" +
+					"Terminal callback triggers automatically the moment the condition block confirmation calculation evaluates to True.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  1) conditionBlock     (number: receives current polling check counter step integer)\n" +
+					"  2) callback           (none: fires once validation returns true, expects 0 parameters)")
 	public void WaitUntil(final int intervalMs, final YailProcedure conditionBlock, final YailProcedure callback) {
-		if (conditionBlock == null || callback == null) return;
+		if (!validateCallback("WaitUntil Condition-Block Check", conditionBlock, 1)) return;
+		if (!validateCallback("WaitUntil Action-Callback Execution", callback, 0)) return;
+
 		final Runnable checker = new Runnable() {
 			private int checks = 0;
 			@Override
@@ -428,9 +503,17 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		uiHandler.post(checker);
 	}
 
-	@SimpleFunction(description = "Retries an action with exponential backoff on failure. Passes currentAttempt to the action block. Fires onFailureCallback if all retries fail.")
+	@SimpleFunction(description =
+			"Performs backoff retry loops, executing blocks interceptively and adjusting delay window scale calculations.\n" +
+					"Triggers the optional onFailureCallback block sequence if all allocation threshold counters exceed limit ranges.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  1) actionBlock         (number: receives current retry loop index value tracking statement)\n" +
+					"  2) onFailureCallback   (none: triggers when max tries are hit, expects 0 parameters)")
 	public void RetryWithBackoff(final int initialDelayMs, final int maxRetries, final YailProcedure actionBlock, final YailProcedure onFailureCallback) {
-		if (actionBlock == null) return;
+		if (!validateCallback("RetryWithBackoff Action-Step Block", actionBlock, 1)) return;
+		if (onFailureCallback != null && !validateCallback("RetryWithBackoff OnFailure Lifecycle", onFailureCallback, 0)) return;
+
 		executeRetryStep(initialDelayMs, maxRetries, 1, actionBlock, onFailureCallback);
 	}
 
@@ -469,9 +552,19 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		}, currentAttempt == 1 ? 0 : currentDelay);
 	}
 
-	@SimpleFunction(description = "Resets countdown on consecutive calls. Fires only when input pauses.")
+	@SimpleFunction(description =
+			"Resets target block delay count triggers dynamically on successive inputs.\n" +
+					"Holds off callback runtime logic blocks completely until active input sequences pause operations.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  1) callback     (none: fires once input pauses completely, expects 0 parameters)")
 	public void Debounce(final String id, final int delayMs, final YailProcedure callback) {
-		if (callback == null || id == null || id.isEmpty()) return;
+		if (id == null || id.isEmpty()) {
+			ErrorOccurred("Debounce", "ID tag identifier cannot be empty.");
+			return;
+		}
+		if (!validateCallback("Debounce [" + id + "]", callback, 0)) return;
+
 		if (debounceMap.containsKey(id)) uiHandler.removeCallbacks(debounceMap.get(id));
 		Runnable r = new Runnable() {
 			@Override
@@ -488,9 +581,19 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		uiHandler.postDelayed(r, delayMs);
 	}
 
-	@SimpleFunction(description = "Limits method execution speed to at most once per interval window.")
+	@SimpleFunction(description =
+			"Restricts task execution execution block metrics down to a single processing window calculation timeline.\n" +
+					"Drops consecutive rapid block validation requests falling inside the constraint timer thresholds.\n" +
+					".\n===============================================================\n.\n" +
+					"Callback parameters:\n" +
+					"  1) callback     (none: fires instantly if window is open, expects 0 parameters)")
 	public void Throttle(final String id, final int intervalMs, final YailProcedure callback) {
-		if (callback == null || id == null || id.isEmpty()) return;
+		if (id == null || id.isEmpty()) {
+			ErrorOccurred("Throttle", "ID tag identifier cannot be empty.");
+			return;
+		}
+		if (!validateCallback("Throttle [" + id + "]", callback, 0)) return;
+
 		long curr = System.currentTimeMillis();
 		long last = throttleMap.containsKey(id) ? throttleMap.get(id) : 0;
 		if (curr - last >= intervalMs) {
@@ -503,55 +606,111 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		}
 	}
 
-	@SimpleFunction(description = "Manages the execution lifecycle of active async operations via prefixed action strings.")
-	public void ControlTask(final String id, @Options(Action.class) String action) {
-		if (id == null || action == null) return;
+	@SimpleFunction(description =
+			"Retrieves a structured list of all currently tracked task IDs filtered by the chosen subsystem.\n" +
+					"-----------------------------------------------------------------------\n" +
+					"Supported Query Options:\n" +
+					" • Intervals   : Returns all active running or paused loop interval IDs.\n" +
+					" • Delays      : Returns all pending post-delay or post-delay-with-args task IDs.\n" +
+					" • Debounces   : Returns all currently active pending debouncing task IDs.\n" +
+					" • Throttles   : Returns all execution tracking IDs locked inside a throttling window.\n" +
+					" • LockedGates : Returns all gate IDs that are currently locked.")
+	public YailList GetActiveIds(@Options(TaskType.class) String taskType) {
+		if (taskType == null) return YailList.makeEmptyList();
+
+		String command = taskType.trim().toUpperCase();
+
+		switch (command) {
+			case "INTERVALS":
+				return YailList.makeList(intervalRunnableMap.keySet());
+
+			case "DELAYS":
+				return YailList.makeList(scheduledTasks.keySet());
+
+			case "DEBOUNCES":
+				return YailList.makeList(debounceMap.keySet());
+
+			case "THROTTLES":
+				return YailList.makeList(throttleMap.keySet());
+
+			case "LOCKED_GATES":
+				return YailList.makeList(lockedGates);
+
+			default:
+				ErrorOccurred("GetActiveIds", "Invalid task type filter query passed: " + taskType);
+				return YailList.makeEmptyList();
+		}
+	}
+
+	@SimpleFunction(description =
+			"Unified administrative dashboard to manage the state and lifecycle of active processes.\n" +
+					"-----------------------------------------------------------------------\n" +
+					"Supported Actions:\n" +
+					" • INTERVAL_PAUSE : Freezes execution cycles for the target interval ID.\n" +
+					" • INTERVAL_RESUME : Unfreezes execution cycles for the target interval ID.\n" +
+					" • INTERVAL_CANCEL : Forcefully terminates the interval and purges all cycle metadata.\n" +
+					" • DEBOUNCE_CANCEL : Aborts a pending debounced execution timer.\n" +
+					" • THROTTLE_CANCEL : Instantly releases a throttled execution lock.\n" +
+					" • DELAY_CANCEL    : Cancels a pending scheduled post-delay or post-delay-with-args task.\n" +
+					" • GATE_LOCK       : Closes an evaluation gate, dropping future GuardGate executions matching this ID.\n" +
+					" • GATE_UNLOCK     : Opens an evaluation gate, allowing GuardGate blocks with this ID to pass through.")
+	public void ManageTask(final String id, @Options(Action.class) String action) {
+		if (id == null || action == null || id.trim().isEmpty()) return;
 
 		String command = action.trim().toUpperCase();
+		String finalId = id.trim();
 
 		switch (command) {
 			case "INTERVAL_PAUSE":
-				if (intervalRunnableMap.containsKey(id)) {
-					intervalPausedStates.put(id, true);
+				if (intervalRunnableMap.containsKey(finalId)) {
+					intervalPausedStates.put(finalId, true);
 				}
 				break;
 
 			case "INTERVAL_RESUME":
-				if (intervalRunnableMap.containsKey(id)) {
-					intervalPausedStates.put(id, false);
+				if (intervalRunnableMap.containsKey(finalId)) {
+					intervalPausedStates.put(finalId, false);
 				}
 				break;
 
 			case "INTERVAL_CANCEL":
-				if (intervalRunnableMap.containsKey(id)) {
-					uiHandler.removeCallbacks(intervalRunnableMap.remove(id));
-					intervalMsMap.remove(id);
-					intervalMaxCycles.remove(id);
-					intervalCycleCounts.remove(id);
-					intervalPausedStates.remove(id);
+				if (intervalRunnableMap.containsKey(finalId)) {
+					uiHandler.removeCallbacks(intervalRunnableMap.remove(finalId));
+					intervalMsMap.remove(finalId);
+					intervalMaxCycles.remove(finalId);
+					intervalCycleCounts.remove(finalId);
+					intervalPausedStates.remove(finalId);
 				}
 				break;
 
 			case "DEBOUNCE_CANCEL":
-				if (debounceMap.containsKey(id)) {
-					uiHandler.removeCallbacks(debounceMap.remove(id));
+				if (debounceMap.containsKey(finalId)) {
+					uiHandler.removeCallbacks(debounceMap.remove(finalId));
 				}
 				break;
 
 			case "THROTTLE_CANCEL":
-				if (throttleMap.containsKey(id)) {
-					throttleMap.remove(id);
+				if (throttleMap.containsKey(finalId)) {
+					throttleMap.remove(finalId);
 				}
 				break;
 
 			case "DELAY_CANCEL":
-				if (scheduledTasks.containsKey(id)) {
-					uiHandler.removeCallbacks(scheduledTasks.remove(id));
+				if (scheduledTasks.containsKey(finalId)) {
+					uiHandler.removeCallbacks(scheduledTasks.remove(finalId));
 				}
 				break;
 
+			case "GATE_LOCK":
+				lockedGates.add(finalId);
+				break;
+
+			case "GATE_UNLOCK":
+				lockedGates.remove(finalId);
+				break;
+
 			default:
-				ErrorOccurred("ControlTask", "Invalid prefixed action command '" + action + "' passed for target ID: " + id);
+				ErrorOccurred("ManageTask", "Invalid prefixed action command '" + action + "' passed for target ID: " + finalId);
 				break;
 		}
 	}
@@ -561,15 +720,17 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 	// ================================================================
 
 	/**
-	 * Validates callback is non-null and has the correct parameter count.
+	 * Interceptively validates that a given macro block callback procedure is non-null
+	 * and matches the precise structural parameter argument bounds expected by the native method.
+	 * Dispatches context mapping descriptions back to the user blocks if structural violations occur.
 	 */
 	private boolean validateCallback(String op, YailProcedure cb, int expected) {
 		if (cb == null) {
-			ErrorOccurred(op, "Callback is null");
+			ErrorOccurred(op, "Callback execution attempt failed: Target anonymous block reference is completely null.");
 			return false;
 		}
 		if (cb.numArgs() != expected) {
-			ErrorOccurred(op, "Callback must have exactly " + expected + " parameter(s). Got " + cb.numArgs() + ".");
+			ErrorOccurred(op, "Structural Block Mismatch Error: The provided callback lambda block expects " + cb.numArgs() + " parameters, but the native execution loop system requires exactly " + expected + " parameter(s). Please correct the input signature on your block layout.");
 			return false;
 		}
 		return true;

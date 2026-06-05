@@ -23,7 +23,8 @@ import java.util.Map;
 import java.util.Set;
 
 @DesignerComponent(
-		version = 13,
+		version = 15,
+		versionName = "v1.0.0",
 		description = "Ultimate high-performance, non-blocking asynchronous execution engine for App Inventor. Provides thread-safe, precise scheduling primitives including multi-instance looping intervals, timelines, debouncing, throttling, frame-synchronized UI updates, and atomic execution gatekeepers.",
 		nonVisible = true,
 		iconName = "icon.png"
@@ -235,12 +236,18 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 	// ================================================================
 
 	@SimpleFunction(description =
-			"Starts an isolated repetitive looping execution context track identified by a text ID tag.\n" +
-					"Pass maxCycles as 0 for infinite processing loop configurations.\n" +
-					".\n===============================================================\n.\n" +
-					"Callback parameters:\n" +
-					"  1) callback           (number: receives current step counter index integer value)\n" +
-					"  2) onCompleteCallback (none: triggers automatically when maxCycles limit is hit)")
+			"Starts an isolated, repeating interval loop tracked by a unique identifier ID.\n" +
+					"Pass 0 for 'maxCycles' to configure a continuous, infinite processing loop.\n" +
+					"-----------------------------------------------------------------------\n" +
+					"Required Callbacks:\n" +
+					"\n" +
+					" 1. callback (Expects exactly 1 parameter)\n" +
+					"    • Receives: 'currentCycle' (number) -> The current execution index, starting at 1.\n" +
+					"    • Note: Place the repetitive blocks you want executed on every interval tick inside here.\n" +
+					"\n" +
+					" 2. onCompleteCallback (Expects exactly 0 parameters)\n" +
+					"    • Triggers automatically ONLY when 'maxCycles' is reached and the loop terminates.\n" +
+					"    • Note: Will never fire if 'maxCycles' is set to 0. Use this to handle post-loop cleanups.")
 	public void StartInterval(final String id, final int intervalMs, final int maxCycles, final YailProcedure callback, final YailProcedure onCompleteCallback) {
 		if (id == null || id.isEmpty()) {
 			ErrorOccurred("StartInterval", "Interval ID identifier cannot be empty.");
@@ -308,17 +315,14 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 	}
 
 	@SimpleFunction(description =
-			"Returns an App Inventor structured list containing tracking text IDs of all active internal loop states.")
-	public YailList GetRunningIntervalIds() {
-		return YailList.makeList(intervalRunnableMap.keySet());
-	}
-
-	@SimpleFunction(description =
-			"Sequences chained execution macros using a master list block processing configuration layout.\n" +
-					"Accepts a paired list formatted exactly as [delayMs, anonymous_block].\n" +
-					".\n===============================================================\n.\n" +
+			"Executes a chained timeline of delayed block tasks using a structured processing list.\n" +
+					"Expects a list containing sub-lists formatted exactly as: [delayMs, block_procedure].\n" +
+					"-----------------------------------------------------------------------\n" +
 					"Callback parameters:\n" +
-					"  1) index        (number: passes the sequential integer layout map list location index)")
+					"\n" +
+					" • index (Expects exactly 1 parameter)\n" +
+					"   • Receives: 'currentIndex' (number) -> The position of the currently executing step in your timeline list.\n" +
+					"   • Note: Use this value if you need to track how far along the timeline sequence has progressed.")
 	public void SequenceTimeline(final YailList timelinePairs) {
 		if (timelinePairs == null || timelinePairs.size() == 0) return;
 		executeTimelineStep(timelinePairs, 1);
@@ -396,24 +400,24 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 	}
 
 	@SimpleFunction(description =
-			"Sets up a tracking queue sync layer. Pushes block taskIds inside a destination repository array group.\n" +
+			"Sets up a tracking queue sync layer. Pushes block task identifiers inside a destination repository array group.\n" +
 					"The terminal callback triggers dynamically only when all items confirm completion via ResolveTask.\n" +
 					".\n===============================================================\n.\n" +
 					"Callback parameters:\n" +
 					"  None (expects exactly 0 parameters)")
-	public void AwaitAll(final String groupId, final YailList taskIds, final YailProcedure callback) {
+	public void AwaitAll(final String groupId, final YailList taskList, final YailProcedure callback) {
 		if (groupId == null || groupId.isEmpty()) {
 			ErrorOccurred("AwaitAll", "Group ID identifier cannot be empty.");
 			return;
 		}
 		if (!validateCallback("AwaitAll [" + groupId + "]", callback, 0)) return;
 
-		Set<Object> Ids = new HashSet<>();
-		for (int i = 1; i <= taskIds.size(); i++) {
-			Ids.add(taskIds.get(i));
+		Set<Object> ids = new HashSet<>();
+		for (int i = 1; i <= taskList.size(); i++) {
+			ids.add(taskList.get(i));
 		}
 
-		if (Ids.isEmpty()) {
+		if (ids.isEmpty()) {
 			try {
 				callback.call();
 			} catch (Exception e) {
@@ -422,7 +426,7 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 			return;
 		}
 
-		awaitGroups.put(groupId, Ids);
+		awaitGroups.put(groupId, ids);
 
 		debounceMap.put("GROUP_CB_" + groupId, new Runnable() {
 			@Override
@@ -443,10 +447,10 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 	public void ResolveTask(final String groupId, Object taskId) {
 		if (groupId == null || !awaitGroups.containsKey(groupId)) return;
 
-		Set<Object> taskIds = awaitGroups.get(groupId);
-		taskIds.remove(taskId);
+		Set<Object> pendingIds = awaitGroups.get(groupId);
+		pendingIds.remove(taskId);
 
-		if (taskIds.isEmpty()) {
+		if (pendingIds.isEmpty()) {
 			Runnable cb = debounceMap.get("GROUP_CB_" + groupId);
 			if (cb != null) {
 				uiHandler.post(cb);
@@ -472,12 +476,18 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 	}
 
 	@SimpleFunction(description =
-			"Asynchronously polls a condition logic block block sequentially inside the main thread runner pipeline.\n" +
-					"Terminal callback triggers automatically the moment the condition block confirmation calculation evaluates to True.\n" +
-					".\n===============================================================\n.\n" +
-					"Callback parameters:\n" +
-					"  1) conditionBlock     (number: receives current polling check counter step integer)\n" +
-					"  2) callback           (none: fires once validation returns true, expects 0 parameters)")
+			"Asynchronously polls a condition block repeatedly until it evaluates to True, then executes a callback.\n" +
+					"Perfect for waiting for background tasks, assets, or hardware connections to initialize before running code.\n" +
+					"-----------------------------------------------------------------------\n" +
+					"Required Callbacks:\n" +
+					"\n" +
+					" 1. conditionBlock (Expects exactly 1 parameter)\n" +
+					"    • Receives: 'checkCount' (number) -> The current poll iteration count, starting at 1.\n" +
+					"    • Note: Must return a boolean (True/False). Your app will keep polling as long as this returns False.\n" +
+					"\n" +
+					" 2. callback (Expects exactly 0 parameters)\n" +
+					"    • Triggers automatically the exact moment the 'conditionBlock' returns True.\n" +
+					"    • Note: Place the downstream actions you want to run after the condition is successfully met inside here.")
 	public void WaitUntil(final int intervalMs, final YailProcedure conditionBlock, final YailProcedure callback) {
 		if (!validateCallback("WaitUntil Condition-Block Check", conditionBlock, 1)) return;
 		if (!validateCallback("WaitUntil Action-Callback Execution", callback, 0)) return;
@@ -504,12 +514,18 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 	}
 
 	@SimpleFunction(description =
-			"Performs backoff retry loops, executing blocks interceptively and adjusting delay window scale calculations.\n" +
-					"Triggers the optional onFailureCallback block sequence if all allocation threshold counters exceed limit ranges.\n" +
-					".\n===============================================================\n.\n" +
-					"Callback parameters:\n" +
-					"  1) actionBlock         (number: receives current retry loop index value tracking statement)\n" +
-					"  2) onFailureCallback   (none: triggers when max tries are hit, expects 0 parameters)")
+			"Executes an operation recursively with an exponential delay backoff if failures occur.\n" +
+					"Perfect for auto-retrying failed network requests without slamming the backend server.\n" +
+					"-----------------------------------------------------------------------\n" +
+					"Required Callbacks:\n" +
+					"\n" +
+					" 1. actionBlock (Expects exactly 1 parameter)\n" +
+					"    • Receives: 'currentRetry' (number) -> The current attempt index, starting at 1.\n" +
+					"    • Note: Place your main executable task inside here. If the task fails, call the retry trigger.\n" +
+					"\n" +
+					" 2. onFailureCallback (Expects exactly 0 parameters)\n" +
+					"    • Triggers automatically ONLY when 'maxRetries' is reached and all attempts have failed.\n" +
+					"    • Note: Use this to show an error message, update the UI, or gracefully cancel the process.")
 	public void RetryWithBackoff(final int initialDelayMs, final int maxRetries, final YailProcedure actionBlock, final YailProcedure onFailureCallback) {
 		if (!validateCallback("RetryWithBackoff Action-Step Block", actionBlock, 1)) return;
 		if (onFailureCallback != null && !validateCallback("RetryWithBackoff OnFailure Lifecycle", onFailureCallback, 0)) return;

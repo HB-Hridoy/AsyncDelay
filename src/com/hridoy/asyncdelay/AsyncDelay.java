@@ -23,8 +23,8 @@ import java.util.Map;
 import java.util.Set;
 
 @DesignerComponent(
-		version = 15,
-		versionName = "v1.0.0",
+		version = 17,
+		versionName = "v1.0.1",
 		description = "Ultimate high-performance, non-blocking asynchronous execution engine for App Inventor. Provides thread-safe, precise scheduling primitives including multi-instance looping intervals, timelines, debouncing, throttling, frame-synchronized UI updates, and atomic execution gatekeepers.",
 		nonVisible = true,
 		iconName = "icon.png"
@@ -469,6 +469,7 @@ public class AsyncDelay extends AndroidNonvisibleComponent implements OnDestroyL
 		if (lockedGates.contains(id)) return;
 
 		try {
+			lockedGates.add(id);
 			callback.call();
 		} catch (Exception e) {
 			ErrorOccurred("GuardGate [" + id + "]", e.getMessage() != null ? e.getMessage() : e.toString());
